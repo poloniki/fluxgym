@@ -21,7 +21,13 @@ from argparse import Namespace
 import train_network
 import toml
 import re
-MAX_IMAGES = 150
+import base64
+from openai import OpenAI
+from pathlib import Path
+from tqdm import tqdm
+import multiprocessing
+from functools import partial
+MAX_IMAGES = 500
 
 with open('models.yaml', 'r') as file:
     models = yaml.safe_load(file)
@@ -266,53 +272,159 @@ def create_dataset(destination_folder, size, *inputs):
     print(f"destination_folder {destination_folder}")
     return destination_folder
 
+def encode_image(image_path):
+    with open(image_path, "rb") as image_file:
+        return base64.b64encode(image_file.read()).decode('utf-8')
+
+def extract_caption_from_text(text):
+    """Extract caption from different text formats."""
+    # Try to find "Caption:" format
+    if "Caption:" in text:
+        return text.split("Caption:")[1].strip()
+    
+    # Try to find caption pattern in the response
+    caption_match = re.search(r'caption:?(.*?)($|filename:)', text, re.IGNORECASE | re.DOTALL)
+    if caption_match:
+        return caption_match.group(1).strip()
+    
+    # If no specific format, just return the whole text as caption
+    return text.strip()
+
+def count_words(text):
+    """Count words in a given text."""
+    return len(text.split())
+
+def generate_caption(image_path):
+    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    
+    # Encode the image
+    base64_image = encode_image(image_path)
+    
+    response = client.responses.create(
+        model="gpt-4.1",
+        input=[
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": f"""
+Create a concise, factual caption for this car image (maximum 30 words).
+
+The caption should follow this structure: "A [color] <car_cheb> viewed from [angle], [lights status if visible], [number plate details], [wheel details], [location] [environmental context]."
+
+For example: "A white <car_cheb> viewed from the rear three-quarter angle, with taillights off, visible rear license plate, black alloy wheels, parked in an outdoor lot on a cloudy day."
+
+Important points to ONLY include:
+- Car color
+- Use "<car_cheb>" as the placeholder for the car brand (do not add any model name)
+- View angle (front, rear, side, three-quarter, etc.)
+- Lights status (on/off and which lights - headlights, taillights, etc.) ONLY if visible
+- Number plate details (visible/not visible, front/rear, blacked-out, etc.)
+- Wheel details (color, type if clearly visible)
+- Location (road, parking lot, showroom, etc.)
+- Environmental context (weather, time of day)
+
+DO NOT include:
+- Grille details
+- Body styling opinions
+- Interior features
+- Any other car features not specifically listed above
+
+Keep your description factual without styling opinions. Use a single, well-structured sentence that provides only the requested information efficiently.
+"""
+                    },
+                    {
+                        "type": "input_image",
+                        "image_url": f"data:image/png;base64,{base64_image}"
+                    }
+                ]
+            }
+        ],
+        text={
+            "format": {
+                "type": "text"
+            }
+        },
+        tools=[],
+        store=True
+    )
+    
+    # Extract the caption with robust handling
+    try:
+        # First try to get from output field
+        if hasattr(response, 'output') and len(response.output) > 1:
+            # Try to get from the second output item (index 1)
+            text = response.output[1].content[0].text
+        elif hasattr(response, 'output') and len(response.output) > 0:
+            # If only one item in output, try that
+            text = response.output[0].content[0].text
+        elif hasattr(response, 'content') and len(response.content) > 0:
+            # Try to get from content field
+            text = response.content[0].text
+        else:
+            # Last resort - use string representation
+            text = str(response)
+            
+        # Extract caption portion from text
+        caption = extract_caption_from_text(text)
+        
+        # Check word count and warn if over limit
+        word_count = count_words(caption)
+        if word_count > 30:
+            print(f"Warning: Caption for {os.path.basename(image_path)} has {word_count} words (exceeds 30 word limit)")
+            
+        return caption
+    except Exception as e:
+        # If we reach here, something went wrong with the response parsing
+        raise Exception(f"Failed to parse response: {str(e)}, Response structure: {str(response)[:200]}...")
+
+def process_single_image(image_path, concept_sentence):
+    """Process a single image and generate a caption"""
+    try:
+        # Generate caption for the image
+        caption = generate_caption(image_path)
+        
+        # Add concept sentence if provided
+        if concept_sentence:
+            caption = f"{concept_sentence} {caption}"
+            
+        return caption
+    except Exception as e:
+        print(f"Error captioning {image_path}: {str(e)}")
+        # Return a default caption or the concept sentence if captioning fails
+        return concept_sentence if concept_sentence else "A detailed image."
 
 def run_captioning(images, concept_sentence, *captions):
-    print(f"run_captioning")
-    print(f"concept sentence {concept_sentence}")
-    print(f"captions {captions}")
-    #Load internally to not consume resources for training
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"device={device}")
-    torch_dtype = torch.float16
-    model = AutoModelForCausalLM.from_pretrained(
-        "multimodalart/Florence-2-large-no-flash-attn", torch_dtype=torch_dtype, trust_remote_code=True
-    ).to(device)
-    processor = AutoProcessor.from_pretrained("multimodalart/Florence-2-large-no-flash-attn", trust_remote_code=True)
-
+    print(f"run_captioning with OpenAI GPT-4.1")
+    print(f"concept sentence: {concept_sentence}")
+    
+    # Check if OpenAI API key is set
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        gr.Warning("OpenAI API key not found. Please set the OPENAI_API_KEY environment variable.")
+        return captions
+    
     captions = list(captions)
+    processed_images = []
+    
+    # Process each image
     for i, image_path in enumerate(images):
-        print(captions[i])
         if isinstance(image_path, str):  # If image is a file path
-            image = Image.open(image_path).convert("RGB")
-
-        prompt = "<DETAILED_CAPTION>"
-        inputs = processor(text=prompt, images=image, return_tensors="pt").to(device, torch_dtype)
-        print(f"inputs {inputs}")
-
-        generated_ids = model.generate(
-            input_ids=inputs["input_ids"], pixel_values=inputs["pixel_values"], max_new_tokens=1024, num_beams=3
-        )
-        print(f"generated_ids {generated_ids}")
-
-        generated_text = processor.batch_decode(generated_ids, skip_special_tokens=False)[0]
-        print(f"generated_text: {generated_text}")
-        parsed_answer = processor.post_process_generation(
-            generated_text, task=prompt, image_size=(image.width, image.height)
-        )
-        print(f"parsed_answer = {parsed_answer}")
-        caption_text = parsed_answer["<DETAILED_CAPTION>"].replace("The image shows ", "")
-        print(f"caption_text = {caption_text}, concept_sentence={concept_sentence}")
-        if concept_sentence:
-            caption_text = f"{concept_sentence} {caption_text}"
-        captions[i] = caption_text
-
-        yield captions
-    model.to("cpu")
-    del model
-    del processor
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+            print(f"Processing image: {image_path}")
+            try:
+                caption_text = process_single_image(image_path, concept_sentence)
+                captions[i] = caption_text
+                processed_images.append(image_path)
+                
+                # Update the UI after each image is processed
+                yield captions
+            except Exception as e:
+                print(f"Error processing image {image_path}: {str(e)}")
+                # Leave the existing caption if there's an error
+    
+    print(f"Captioning complete for {len(processed_images)} images")
+    return captions
 
 def recursive_update(d, u):
     for k, v in u.items():
@@ -692,6 +804,13 @@ def loaded():
     global current_account
     current_account = account_hf()
     print(f"current_account={current_account}")
+    # Trigger refresh to update UI with new default values
+    gr.Info("Refreshing UI with updated default values")
+    
+    # Check if OpenAI API key is set
+    if not os.getenv("OPENAI_API_KEY"):
+        gr.Warning("OpenAI API key not found. Please set the OPENAI_API_KEY environment variable to use the GPT-4.1 captioning feature.")
+    
     if current_account != None:
         return gr.update(value=current_account["token"]), gr.update(visible=False), gr.update(visible=True), gr.update(value=current_account["account"], visible=True)
     else:
@@ -747,6 +866,22 @@ def init_advanced():
         'network_args'
     }
 
+    # Default values for specific advanced components
+    default_values = {
+        '--enable_bucket': True,
+        '--flip_aug': True,
+        '--lr_scheduler_args': 'T_max=10000',
+        '--lr_scheduler_min_lr_ratio': '0.1',
+        '--lr_scheduler_num_cycles': '1',
+        '--lr_scheduler_type': 'CosineAnnealingLR',
+        '--min_snr_gamma': '5',
+        '--multires_noise_discount': '0.3',
+        '--multires_noise_iterations': '6',
+        '--noise_offset': '0.1',
+        '--text_encoder_lr': '5e-5',
+        '--train_batch_size': '64'
+    }
+
     # generate a UI config
     # if not in basic_args, create a simple form
     parser = train_network.setup_parser()
@@ -779,17 +914,11 @@ def init_advanced():
             with gr.Column(min_width=300):
                 if action_type == "None":
                     # radio
-                    component = gr.Checkbox()
-    #            elif action_type == "<class 'str'>":
-    #                component = gr.Textbox()
-    #            elif action_type == "<class 'int'>":
-    #                component = gr.Number(precision=0)
-    #            elif action_type == "<class 'float'>":
-    #                component = gr.Number()
-    #            elif "int_or_float" in action_type:
-    #                component = gr.Number()
+                    default_val = default_values.get(action['action'][0], False) if action['action'] and action['action'][0] in default_values else False
+                    component = gr.Checkbox(value=default_val)
                 else:
-                    component = gr.Textbox(value="")
+                    default_val = default_values.get(action['action'][0], "") if action['action'] and action['action'][0] in default_values else ""
+                    component = gr.Textbox(value=default_val)
                 if component != None:
                     component.interactive = True
                     component.elem_id = action['action'][0]
@@ -924,7 +1053,7 @@ with gr.Blocks(elem_id="app", theme=theme, css=css, fill_width=True) as demo:
                     base_model = gr.Dropdown(label="Base model (edit the models.yaml file to add more to this list)", choices=model_names, value=model_names[0])
                     vram = gr.Radio(["20G", "16G", "12G" ], value="20G", label="VRAM", interactive=True)
                     num_repeats = gr.Number(value=10, precision=0, label="Repeat trains per image", interactive=True)
-                    max_train_epochs = gr.Number(label="Max Train Epochs", value=16, interactive=True)
+                    max_train_epochs = gr.Number(label="Max Train Epochs", value=20, interactive=True)
                     total_steps = gr.Number(0, interactive=False, label="Expected training steps")
                     sample_prompts = gr.Textbox("", lines=5, label="Sample Image Prompts (Separate with new lines)", interactive=True)
                     sample_every_n_steps = gr.Number(0, precision=0, label="Sample Image Every N Steps", interactive=True)
@@ -945,7 +1074,7 @@ with gr.Blocks(elem_id="app", theme=theme, css=css, fill_width=True) as demo:
                             scale=1,
                         )
                     with gr.Group(visible=False) as captioning_area:
-                        do_captioning = gr.Button("Add AI captions with Florence-2")
+                        do_captioning = gr.Button("Add AI captions with GPT-4.1")
                         output_components.append(captioning_area)
                         #output_components = [captioning_area]
                         caption_list = []
@@ -976,27 +1105,27 @@ with gr.Blocks(elem_id="app", theme=theme, css=css, fill_width=True) as demo:
                         """# Step 3. Train
         <p style="margin-top:0">Press start to start training.</p>
         """, elem_classes="group_padding")
-                    refresh = gr.Button("Refresh", elem_id="refresh", visible=False)
+                    refresh = gr.Button("Refresh", elem_id="refresh", visible=True)
                     start = gr.Button("Start training", visible=False, elem_id="start_training")
                     output_components.append(start)
                     train_script = gr.Textbox(label="Train script", max_lines=100, interactive=True)
                     train_config = gr.Textbox(label="Train config", max_lines=100, interactive=True)
-            with gr.Accordion("Advanced options", elem_id='advanced_options', open=False):
+            with gr.Accordion("Advanced options", elem_id='advanced_options', open=True):
                 with gr.Row():
                     with gr.Column(min_width=300):
                         seed = gr.Number(label="--seed", info="Seed", value=42, interactive=True)
                     with gr.Column(min_width=300):
                         workers = gr.Number(label="--max_data_loader_n_workers", info="Number of Workers", value=2, interactive=True)
                     with gr.Column(min_width=300):
-                        learning_rate = gr.Textbox(label="--learning_rate", info="Learning Rate", value="8e-4", interactive=True)
+                        learning_rate = gr.Textbox(label="--learning_rate", info="Learning Rate", value="5e-4", interactive=True)
                     with gr.Column(min_width=300):
-                        save_every_n_epochs = gr.Number(label="--save_every_n_epochs", info="Save every N epochs", value=4, interactive=True)
+                        save_every_n_epochs = gr.Number(label="--save_every_n_epochs", info="Save every N epochs", value=1, interactive=True)
                     with gr.Column(min_width=300):
                         guidance_scale = gr.Number(label="--guidance_scale", info="Guidance Scale", value=1.0, interactive=True)
                     with gr.Column(min_width=300):
                         timestep_sampling = gr.Textbox(label="--timestep_sampling", info="Timestep Sampling", value="shift", interactive=True)
                     with gr.Column(min_width=300):
-                        network_dim = gr.Number(label="--network_dim", info="LoRA Rank", value=4, minimum=4, maximum=128, step=4, interactive=True)
+                        network_dim = gr.Number(label="--network_dim", info="LoRA Rank", value=8, minimum=4, maximum=128, step=4, interactive=True)
                     advanced_components, advanced_component_ids = init_advanced()
             with gr.Row():
                 terminal = LogsView(label="Train log", elem_id="terminal")
@@ -1116,4 +1245,12 @@ with gr.Blocks(elem_id="app", theme=theme, css=css, fill_width=True) as demo:
     refresh.click(update, inputs=listeners, outputs=[train_script, train_config, dataset_folder])
 if __name__ == "__main__":
     cwd = os.path.dirname(os.path.abspath(__file__))
+    
+    # Check if OpenAI API key is set
+    api_key = os.getenv("OPENAI_API_KEY")
+    if api_key:
+        print(f"OpenAI API key found with length {len(api_key)}")
+    else:
+        print("WARNING: OpenAI API key not found. GPT-4.1 captioning will not work.")
+    
     demo.launch(debug=True, show_error=True, allowed_paths=[cwd])

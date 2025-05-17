@@ -11,6 +11,7 @@ RUN apt-get update -y && apt-get install -y \
 # Define environment variables for UID and GID and local timezone
 ENV PUID=${PUID:-1000}
 ENV PGID=${PGID:-1000}
+ENV OPENAI_API_KEY=${OPENAI_API_KEY:-}
 
 # Create a group with the specified GID
 RUN groupadd -g "${PGID}" appuser
@@ -39,6 +40,8 @@ RUN rm ./requirements.txt
 
 #Run application as non-root
 USER appuser
+RUN pip install --upgrade --force-reinstall triton==2.1.0
+
 
 # Copy fluxgym application code
 COPY . ./fluxgym

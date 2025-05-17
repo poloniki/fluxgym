@@ -257,6 +257,17 @@ The advanced tab is automatically constructed by parsing the launch flags availa
 
 ## Advanced Features
 
+### OpenAI GPT-4.1 Captioning
+
+Fluxgym now supports automatic image captioning using OpenAI's GPT-4.1 model. This feature provides high-quality, detailed captions for your training images.
+
+To use this feature:
+1. Set your OpenAI API key as an environment variable: `export OPENAI_API_KEY=your_api_key_here`
+2. Upload your images and click the "Add AI captions with GPT-4.1" button
+3. GPT-4.1 will analyze each image and generate detailed captions
+
+The prompting has been optimized for car images, but you can modify the prompt in `app.py` to adapt it to your specific needs.
+
 ### Uploading Caption Files
 
 You can also upload the caption files along with the image files. You just need to follow the convention:
