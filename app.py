@@ -482,6 +482,7 @@ def gen_sh(
   --learning_rate {learning_rate} {line_break}
   --text_encoder_lr {text_encoder_lr} {line_break}
   --lr_scheduler_type {lr_scheduler_type} {line_break}
+  --lr_scheduler_args {lr_scheduler_args} {line_break}
   --lr_scheduler_min_lr_ratio {lr_scheduler_min_lr_ratio} {line_break}
   --lr_scheduler_num_cycles {lr_scheduler_num_cycles} {line_break}
   --cache_text_encoder_outputs {line_break}
