@@ -159,6 +159,30 @@ git clone -b sd3 https://github.com/kohya-ss/sd-scripts
 Check your `user id` and `group id` and change it if it's not 1000 via `environment variables` of `PUID` and `PGID`. 
 You can find out what these are in linux by running the following command: `id`
 
+### Setting Environment Variables for Docker
+
+To set environment variables like the OpenAI API key for captioning, you have several options:
+
+#### Option 1: Create a .env file (Recommended)
+Create a file named `.env` in the same directory as your docker-compose.yml:
+
+```
+OPENAI_API_KEY=your_openai_api_key_here
+PUID=1000
+PGID=1000
+```
+
+#### Option 2: Export the variable before running docker-compose
+```bash
+export OPENAI_API_KEY=your_openai_api_key_here
+docker compose up -d --build
+```
+
+#### Option 3: Pass it directly in the command line
+```bash
+OPENAI_API_KEY=your_openai_api_key_here docker compose up -d --build
+```
+
 Now build the image and run it via `docker-compose`:
 ```
 docker compose up -d --build

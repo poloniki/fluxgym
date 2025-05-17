@@ -602,20 +602,28 @@ def gen_sh(
     ############# Advanced args ########################
     global advanced_component_ids
     global original_advanced_component_values
+    global boolean_flags
    
     # check dirty
     print(f"original_advanced_component_values = {original_advanced_component_values}")
     advanced_flags = []
     for i, current_value in enumerate(advanced_components):
-#        print(f"compare {advanced_component_ids[i]}: old={original_advanced_component_values[i]}, new={current_value}")
+        flag_id = advanced_component_ids[i]
+        print(f"compare {flag_id}: old={original_advanced_component_values[i]}, new={current_value}")
+        
         if original_advanced_component_values[i] != current_value:
-            # dirty
-            if current_value == True:
-                # Boolean
-                advanced_flags.append(advanced_component_ids[i])
-            else:
-                # string
-                advanced_flags.append(f"{advanced_component_ids[i]} {current_value}")
+            # Check if this is a boolean flag
+            is_boolean = flag_id in boolean_flags
+            
+            if is_boolean:
+                if current_value == True:
+                    # Boolean flag that is enabled - add just the flag
+                    advanced_flags.append(flag_id)
+                # If it's False, skip it entirely
+            elif current_value and str(current_value).strip():
+                # Non-boolean with a non-empty value
+                advanced_flags.append(f"{flag_id} {current_value}")
+            # Skip empty string values
 
     if len(advanced_flags) > 0:
         advanced_flags_str = f" {line_break}\n  ".join(advanced_flags)
@@ -881,6 +889,11 @@ def init_advanced():
         '--text_encoder_lr': '5e-5',
         '--train_batch_size': '64'
     }
+    
+    # List of flags that should be treated as boolean (no value when enabled)
+    # We'll store this as a global to use in gen_sh
+    global boolean_flags
+    boolean_flags = set()
 
     # generate a UI config
     # if not in basic_args, create a simple form
@@ -913,9 +926,12 @@ def init_advanced():
             component = None
             with gr.Column(min_width=300):
                 if action_type == "None":
-                    # radio
+                    # This is a boolean flag (checkbox)
                     default_val = default_values.get(action['action'][0], False) if action['action'] and action['action'][0] in default_values else False
                     component = gr.Checkbox(value=default_val)
+                    # Add to boolean_flags set if it has option strings
+                    if action['action'] and len(action['action']) > 0:
+                        boolean_flags.add(action['action'][0])
                 else:
                     default_val = default_values.get(action['action'][0], "") if action['action'] and action['action'][0] in default_values else ""
                     component = gr.Textbox(value=default_val)
@@ -928,6 +944,8 @@ def init_advanced():
                     component.info = action['help']
             advanced_components.append(component)
             advanced_component_ids.append(component.elem_id)
+    
+    print(f"Boolean flags: {boolean_flags}")
     return advanced_components, advanced_component_ids
 
 

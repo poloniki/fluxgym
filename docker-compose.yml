@@ -9,8 +9,12 @@ services:
     ports:
       - 7860:7860
     environment:
+      # User and group IDs - check with 'id' command
       - PUID=${PUID:-1000}
       - PGID=${PGID:-1000}
+      # OpenAI API key for GPT-4.1 image captioning
+      # Set this using a .env file or environment variable
+      # Example: export OPENAI_API_KEY=your_api_key_here
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
     volumes:
       - /etc/localtime:/etc/localtime:ro
