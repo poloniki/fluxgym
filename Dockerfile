@@ -9,7 +9,7 @@ ARG PGID=1000
 RUN groupadd -g "${PGID}" appuser \
 && useradd -m -s /bin/sh -u "${PUID}" -g "${PGID}" appuser
 
-WORKDIR /workspace
+WORKDIR /workspace/fluxgym
 
 # Install sd-scripts dependencies
 RUN git clone -b sd3 https://github.com/kohya-ss/sd-scripts /tmp/sd-scripts \
